@@ -1,0 +1,16 @@
+# Segredos (senhas e chaves) — NUNCA enviar para o GitHub
+.env
+
+# Ambiente virtual do Python
+.venv/
+venv/
+
+# Arquivos temporários do Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Arquivos do sistema/editor
+.vscode/
+.DS_Store
+Thumbs.db

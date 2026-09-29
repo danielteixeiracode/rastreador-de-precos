@@ -1,0 +1,39 @@
+# Roda o robô automaticamente no GitHub Actions.
+name: Rastreador de Preços
+
+on:
+  schedule:
+    # Todo dia às 03:00 UTC = meia-noite no horário de Brasília.
+    # (O GitHub pode atrasar alguns minutos em horários de muito uso.)
+    - cron: "0 3 * * *"
+  # Permite rodar na hora, clicando em "Run workflow" na aba Actions.
+  workflow_dispatch:
+
+jobs:
+  rastrear:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o código do repositório
+        uses: actions/checkout@v5
+
+      - name: Instalar o Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Instalar as bibliotecas
+        run: pip install -r requirements.txt
+
+      - name: Rodar os testes
+        run: python -m pytest
+
+      - name: Rodar o robô
+        run: python main.py
+        # As senhas vêm dos "Secrets" do GitHub, não do arquivo .env
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GMAIL_USUARIO: ${{ secrets.GMAIL_USUARIO }}
+          GMAIL_SENHA_APP: ${{ secrets.GMAIL_SENHA_APP }}
+          EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
