@@ -1,210 +1,92 @@
 # Rastreador de Preços
 
-Robô em Python que, todo dia à meia-noite, visita páginas de produtos em lojas online,
-lê o preço, guarda um histórico no banco de dados e envia um e-mail quando o preço cai.
+> Job diário que monitora preços de produtos em lojas online, guarda o histórico e envia alerta por e-mail quando o preço cai.
 
-## Como funciona
+[PREENCHER: GIF ou print da aplicação (saída no terminal e e-mail de alerta)]
 
-1. Lê a lista de produtos no arquivo `produtos.json`.
-2. Abre a página de cada produto e extrai o preço.
-3. Busca no Supabase (PostgreSQL) o último preço guardado.
-4. Grava o preço de hoje.
-5. Se o preço caiu, envia um e-mail pelo Gmail.
+## O problema
 
-## Tecnologias
+Acompanhar o preço de um produto exige abrir a página da loja todos os dias e lembrar quanto ele custava antes. Sem histórico, não dá para saber se uma "promoção" é de fato uma queda.
 
-- **Python**: a linguagem do robô.
-- **Supabase**: banco de dados PostgreSQL na nuvem, onde fica o histórico de preços.
-- **Gmail** (senha de app): envio dos alertas.
-- **GitHub Actions**: roda o robô automaticamente todos os dias.
+## A solução
 
-## Estrutura de pastas
+Um script em Python, agendado no GitHub Actions, lê o preço de cada produto da lista uma vez por dia, compara com o último valor gravado no Postgres (Supabase) e, se o preço caiu, envia um e-mail com o valor anterior, o novo, a economia e o link do produto. Roda na nuvem, sem servidor próprio e sem o computador ligado.
 
-```
-Rastreador de Precos/
-├── .github/workflows/
-│   └── rastreador.yml   # agendamento diário no GitHub Actions
-├── main.py              # ponto de partida: é o arquivo que você executa
-├── produtos.json        # lista de produtos a acompanhar
-├── requirements.txt     # bibliotecas Python necessárias
-├── .env.example         # modelo das senhas/chaves (sem valores reais)
-├── .env                 # suas senhas/chaves reais (NÃO vai para o GitHub)
-├── .gitignore           # arquivos que o Git deve ignorar
-├── rastreador/          # o código do robô, dividido por assunto
-│   ├── config.py        # lê o produtos.json e o .env
-│   ├── preco.py         # baixa a página e encontra o preço
-│   ├── banco.py         # grava e busca preços no Supabase
-│   ├── comparacao.py    # decide se o preço caiu, subiu ou ficou igual
-│   └── notificacao.py   # monta e envia o e-mail de alerta pelo Gmail
-├── testar_email.py      # envia um e-mail de exemplo para testar o Gmail
-├── sql/
-│   └── criar_tabela.sql # código que cria a tabela no Supabase
-└── tests/               # testes automáticos
-    ├── test_banco.py
-    ├── test_comparacao.py
-    ├── test_config.py
-    ├── test_notificacao.py
-    └── test_preco.py
+## Arquitetura
+
+```mermaid
+flowchart LR
+    GA[GitHub Actions<br/>cron diário 03:00 UTC] -->|pytest, depois main.py| M[main.py]
+    P[produtos.json] --> M
+    M -->|HTTP GET| L[Página da loja]
+    L -->|HTML| E[preco.py<br/>metatags schema.org / Open Graph]
+    E -->|Decimal| M
+    M -->|último preço, depois grava o novo| DB[(Supabase<br/>Postgres, tabela precos)]
+    M --> C[comparacao.py<br/>caiu / subiu / igual]
+    C -->|caiu| N[notificacao.py<br/>SMTP Gmail]
+    N -->|alerta| U[E-mail do usuário]
 ```
 
-## Como a comparação funciona
+## Funcionalidades
 
-Para cada produto, o robô:
+- Lista de produtos configurável em `produtos.json`.
+- Extração do preço por metatags padrão (`itemprop="price"`, `product:price:amount`, `og:price:amount`), sem seletores específicos de cada loja.
+- Histórico de preços no Postgres, com índice por produto e data.
+- Classificação de cada leitura: primeira leitura, caiu, subiu ou sem mudança.
+- Alerta por e-mail quando o preço cai.
+- Falha em um produto não interrompe os outros; a execução termina com erro para o GitHub Actions avisar.
+- Script separado para testar o envio de e-mail sem mexer no banco.
 
-1. lê o preço de hoje na página;
-2. busca no banco o **último** preço guardado daquele produto (ordenando por
-   `coletado_em`, do mais novo para o mais antigo, e pegando só o primeiro);
-3. grava o preço de hoje;
-4. compara os dois e mostra o resultado:
+## Stack
 
-| Situação                         | O que aparece na tela                          |
-|----------------------------------|------------------------------------------------|
-| Nenhum preço anterior no banco   | `R$ 38,40 (primeira leitura, nada para comparar)` |
-| Preço menor que o anterior       | `R$ 35,00 — CAIU! (antes: R$ 38,40)`            |
-| Preço maior que o anterior       | `R$ 40,00 — subiu (antes: R$ 38,40)`            |
-| Preço igual                      | `R$ 38,40 — sem mudança`                        |
+- **Linguagem:** Python [PREENCHER: versão mínima testada; o workflow usa 3.14]
+- **Coleta:** requests, BeautifulSoup
+- **Dados:** Supabase (Postgres, Row Level Security), cliente `supabase-py`
+- **Notificação:** SMTP do Gmail com senha de app
+- **Agendamento e CI:** GitHub Actions
+- **Testes:** pytest
 
-A busca acontece **antes** de gravar; senão o robô compararia o preço de hoje com ele mesmo.
+## Decisões técnicas
 
-Quando o preço **cai**, o robô envia um e-mail de alerta com o preço antigo, o novo,
-a economia e o link do produto.
+1. **Metatags padronizadas em vez de seletores por loja.** Muitas lojas publicam o preço em metatags schema.org ou Open Graph para mecanismos de busca. Ler essas tags torna o mesmo código reaproveitável em lojas diferentes; quando uma loja não as tem, o produto falha com uma mensagem clara e os demais continuam.
+2. **`Decimal` em vez de `float`.** Valores monetários são lidos, comparados e gravados como `Decimal` (e enviados ao banco como texto) para evitar erros de arredondamento.
+3. **Ler o último preço antes de gravar o novo.** A ordem evita que o preço do dia seja comparado com ele mesmo.
+4. **GitHub Actions como agendador.** Elimina a necessidade de servidor; os testes rodam antes do job, os segredos ficam em Actions Secrets e o código de saída `1` faz o GitHub notificar falhas.
 
-## Configurando o Gmail (uma única vez)
+## Resultados
 
-O robô envia o e-mail pelo Gmail usando uma **senha de app** — uma senha de 16 letras
-criada só para ele, diferente da sua senha normal.
+[PREENCHER: tempo em produção, número de produtos monitorados, quedas detectadas]
 
-1. Ative a verificação em duas etapas em
-   [myaccount.google.com/signinoptions/twosv](https://myaccount.google.com/signinoptions/twosv).
-2. Crie a senha de app em
-   [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
-   (nome: `Rastreador de Precos`) e copie a senha exibida.
-3. Preencha no `.env`:
+## Como executar
 
-   ```
-   GMAIL_USUARIO=email.que.envia@gmail.com
-   GMAIL_SENHA_APP=abcdefghijklmnop
-   EMAIL_DESTINO=email.que.recebe@gmail.com
-   ```
+Pré-requisitos: Python 3, um projeto no Supabase e uma conta Gmail com verificação em duas etapas.
 
-4. Teste o envio (não mexe no banco):
-
-   ```powershell
-   python testar_email.py
-   ```
-
-## Configurando o Supabase (uma única vez)
-
-1. Crie uma conta gratuita em [supabase.com](https://supabase.com) e crie um projeto novo.
-2. No menu lateral do projeto, abra o **SQL Editor**, cole o conteúdo de
-   [`sql/criar_tabela.sql`](sql/criar_tabela.sql) e clique em **Run**.
-   Isso cria a tabela `precos`:
-
-   | coluna         | o que guarda                         |
-   |----------------|--------------------------------------|
-   | `id`           | número de identificação da linha     |
-   | `produto_nome` | nome do produto                      |
-   | `produto_url`  | endereço da página do produto        |
-   | `preco`        | preço lido (ex.: 38.40)              |
-   | `coletado_em`  | data e hora da leitura (automático)  |
-
-3. Copie a **URL do projeto** e a **chave secreta** (*secret key*) para o arquivo `.env`:
-
-   ```
-   SUPABASE_URL=https://xxxxxxxx.supabase.co
-   SUPABASE_KEY=sb_secret_xxxxxxxx
-   ```
-
-A tabela tem *Row Level Security* ativado: ninguém consegue ler ou alterar os dados
-pela internet sem a chave secreta, que fica só no `.env`.
-
-## Como o preço é encontrado
-
-O robô baixa o HTML da página (com a biblioteca `requests`) e procura, com a biblioteca
-`BeautifulSoup`, uma etiqueta `<meta>` que informa o preço. Muitas lojas usam essas
-etiquetas para mostrar o preço no Google, por exemplo:
-
-```html
-<meta itemprop="price" content="38.40" />
-```
-
-O robô tenta, nesta ordem: `itemprop="price"` (padrão schema.org),
-`property="product:price:amount"` e `property="og:price:amount"` (padrão Open Graph).
-Se a página de uma loja nova não tiver nenhuma delas, o robô mostra o erro
-"Não encontrei o preço na página." e segue para o próximo produto.
-
-Os preços são guardados como `Decimal` (e não `float`), porque o `Decimal` faz contas
-com dinheiro sem erros de arredondamento.
-
-## Como rodar no seu computador (Windows)
-
-Abra o terminal na pasta do projeto e rode:
-
-```powershell
-# 1. Criar o ambiente virtual (só na primeira vez)
+```bash
 python -m venv .venv
-
-# 2. Ativar o ambiente virtual (toda vez que abrir um terminal novo)
-.venv\Scripts\Activate.ps1
-
-# 3. Instalar as bibliotecas (na primeira vez e quando o requirements.txt mudar)
+source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-# 4. Criar seu arquivo de senhas a partir do modelo (só na primeira vez)
-copy .env.example .env
-
-# 5. Rodar o robô
-python main.py
-# Saída esperada:
-#   Verificando 1 produto(s)...
-#   - Meditações - Marco Aurélio: R$ 38,40 — sem mudança
-
-# 6. Rodar os testes
-python -m pytest
+cp .env.example .env             # Windows: copy .env.example .env
 ```
 
-> Se o passo 2 der erro de "execução de scripts desabilitada", rode uma vez:
-> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` e responda `S`.
+1. No SQL Editor do Supabase, rode `sql/criar_tabela.sql`.
+2. Preencha o `.env` (o modelo já existe em `.env.example`):
+   - `SUPABASE_URL`
+   - `SUPABASE_KEY` (chave secreta)
+   - `GMAIL_USUARIO`
+   - `GMAIL_SENHA_APP` (senha de app do Google)
+   - `EMAIL_DESTINO`
+3. Teste o e-mail e rode:
 
-## Como acompanhar um produto novo
-
-Abra o `produtos.json` e acrescente um item na lista, separado por vírgula:
-
-```json
-[
-  {
-    "nome": "Meditações - Marco Aurélio",
-    "url": "https://www.livrariascuritiba.com.br/marco-aurelio---meditacoes-lv472246/p"
-  },
-  {
-    "nome": "Outro produto",
-    "url": "https://..."
-  }
-]
+```bash
+python testar_email.py   # envia um alerta de exemplo; não usa o banco
+python main.py           # executa o rastreador
+python -m pytest         # testes
 ```
 
-## Execução automática (GitHub Actions)
+**Execução automática:** cadastre as mesmas cinco variáveis em *Settings → Secrets and variables → Actions*. O workflow `.github/workflows/rastreador.yml` roda todo dia às 03:00 UTC e pode ser disparado manualmente em *Actions → Run workflow*.
 
-O arquivo [`.github/workflows/rastreador.yml`](.github/workflows/rastreador.yml) faz o
-GitHub rodar o robô **todo dia às 03:00 UTC (meia-noite em Brasília)**, na nuvem, mesmo
-com o computador desligado. A cada execução ele instala as bibliotecas, roda os testes
-e depois o robô.
+## Próximos passos
 
-Como o `.env` não vai para o GitHub, as senhas ficam guardadas nos **Secrets** do
-repositório. Para cadastrá-las: no repositório, **Settings → Secrets and variables →
-Actions → New repository secret**, criando um secret para cada variável:
-
-`SUPABASE_URL`, `SUPABASE_KEY`, `GMAIL_USUARIO`, `GMAIL_SENHA_APP`, `EMAIL_DESTINO`
-
-Para rodar na hora, sem esperar a meia-noite: aba **Actions → Rastreador de Preços →
-Run workflow**. Se algum produto der erro, a execução fica marcada com ❌ e o GitHub
-avisa por e-mail.
-
-> Observação: em repositórios sem nenhuma alteração por 60 dias, o GitHub pausa os
-> agendamentos. Para reativar, basta clicar em **Enable workflow** na aba Actions.
-
-## Segurança
-
-Senhas e chaves ficam **somente** no arquivo `.env`, que está no `.gitignore` e por isso
-nunca é enviado ao GitHub. O arquivo `.env.example` mostra quais variáveis são necessárias,
-mas sem os valores.
+- [PREENCHER: próximos passos planejados]
+- Suporte a lojas sem metatags de preço (seletores configuráveis por domínio). [CONFIRMAR]
+- Alerta por preço-alvo, além de alerta por qualquer queda. [CONFIRMAR]
